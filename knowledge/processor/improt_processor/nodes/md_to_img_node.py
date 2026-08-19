@@ -1,6 +1,8 @@
 import os
 import sys
 
+from knowledge.utils.client.storage_clients import StorageClients
+
 if __name__ == "__main__":
     # 独立运行本文件时把项目根加入 sys.path，保证 knowledge 包可导入
     sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "..")))
@@ -58,20 +60,20 @@ class _MdFileHandler:
         md_path = state.get("md_path","")
         #2.校验md路径是否为空
         if not md_path:
-            raise StateFieldError(node_name=self.node_name, field_name='md_path', expected_type=str, message="Markdown文件路径不能为空")
+            raise StateFieldError(node_name=self.name, field_name='md_path', expected_type=str, message="Markdown文件路径不能为空")
 
         #3。将md路径转换为Path对象
         md_path_obj = Path(md_path)
         #4.校验路径是否存在
         if not md_path_obj.exists():
-            raise StateFieldError(node_name=self.node_name, field_name='md_path', expected_type=str, message="Markdown文件路径不存在")
+            raise StateFieldError(node_name=self.name, field_name='md_path', expected_type=str, message="Markdown文件路径不存在")
 
         #5.读取Markdown文件内容
         try:
             with open(md_path_obj, 'r', encoding='utf-8') as f:
                 md_content = f.read()
         except IOError as e:
-            self.logger(f"MD文件:{md_path_obj.name} 打开失败")
+            self.logger.error(f"MD文件:{md_path_obj.name} 打开失败")
             raise FileProcessingError(message=f"MD文件:{md_path_obj.name} 打开失败")
 
         #6.获取图片的目录
@@ -80,7 +82,22 @@ class _MdFileHandler:
         #7.返回
         return md_content,md_path_obj,img_dir
 
+    def backup(self, md_path_obj: Path, new_md_content: str) -> str:
+        self.logger.info("【step_5】备份新文件")
 
+        new_file_path = md_path_obj.with_name(
+            f"{md_path_obj.stem}_new{md_path_obj.suffix}"
+        )
+        try:
+            with open(new_file_path, "w", encoding="utf-8") as f:
+                f.write(new_md_content)
+            self.logger.info(f"处理后的文件已备份至: {new_file_path}")
+        except IOError as e:
+            self.logger.error(f"写入新文件失败 {new_file_path}: {e}")
+            raise FileProcessingError(
+                f"文件写入失败: {e}", node_name="md_img_node"
+            )
+        return str(new_file_path)
 
 
 class _ImageScanner:
@@ -163,7 +180,6 @@ class _ImageScanner:
                 pre_text=pre_context,
                 post_text=post_context
             )
-            return None
 
 
 
@@ -262,7 +278,7 @@ class _VLMSummarizer:
             vlm_client = AIClients.get_openai()
         except Exception as e:
             for image_info in image_info_list:
-                summaries[image_info.img_name] = "暂无摘要"
+                summaries[image_info.name] = "暂无摘要"
             return summaries
         #2.遍历图片信息列表，提取摘要
         for img_info in image_info_list:
@@ -359,6 +375,102 @@ class _ImageUploader:
     def __init__(self, logger):
         self.logger = logger
 
+    def upload_and_replace(self,
+                           object_dir_name:str,
+                           image_info_list:List[ImageInfo],
+                           summaries:Dict[str,str],
+                           md_content:str, minio_bucket_name:str,
+                           minio_base_url:str)->str:
+        """
+        上传文件图片到minio并且更新md中的图片地址以及摘要
+        并在Markdown内容中替换图片路径
+        :param object_dir_name: 图片目录名
+        :param image_info_list: 图片信息列表
+        :param summaries: VLM生成的图片摘要
+        :param md_content: 内容
+        :param minio_bucket_name: MinIO存储桶名
+        :param minio_base_url: MinIO服务端点
+        :return:
+        """
+        #1.上传
+        img_url_map = self._upload_all(object_dir_name,image_info_list, minio_bucket_name, minio_base_url)
+
+
+        #2.更新
+        md_content = self._update_md(md_content, summaries, img_url_map)
+
+        return md_content
+
+    def _upload_all(self, object_dir_name:str, image_info_list:List[ImageInfo], minio_bucket_name:str, minio_base_url:str)->Dict[str,str]:
+        """
+        上传所有图片到minio
+        :param object_dir_name: 图片目录名
+        :param image_info_list: 图片信息列表
+        :param minio_bucket_name: MinIO存储桶名
+        :param minio_base_url: MinIO服务端点
+        :return: dict[str,str] 1.图片名 2.图片url
+        """
+        img_url_map = {}
+       #1.1创建minio客户端
+        try:
+            minio_client = StorageClients.get_minio_client()
+        except Exception as e:
+            self.logger.error(f"创建minio客户端失败: {e}")
+            for image_info in image_info_list:
+                img_url_map[image_info.name] = image_info.path
+            return img_url_map
+
+        #1.2上传图片到minio
+        for image_info in image_info_list:
+            #拼接后半部分url
+            object_name = f"{object_dir_name}/{image_info.name}"
+            #上传图片到minio
+            try:
+                minio_client.fput_object(minio_bucket_name, object_name, image_info.path)
+                self.logger.info(f"成功将图片{image_info.name}上传到MinIO中")
+                img_url_map[image_info.name] = f"{minio_base_url}/{minio_bucket_name}/{object_name}"
+
+            except Exception as e:
+                self.logger.error(f"上传图片到minio失败: {e},使用本地路径兜底")
+                img_url_map[image_info.name] = image_info.path
+
+            self.logger.info(f"图片{image_info.name}上传完成")
+        return img_url_map
+
+    def _update_md(self, md_content: str, summaries: Dict[str, str], remote_urls: Dict[str, str]) -> str:
+        """
+        更新MD中的图片描述和远程图片地址
+        Args:
+            md_content:  md内容
+            summaries:   vlm生成的摘要
+            remote_urls: minio生成的url
+
+        Returns:
+            新md
+
+        """
+        # 利用正则寻找(捕获组：()一个捕获组：group(0) 将整个匹配到的内容放进去 group(1)：图片的摘要 group(2):图片地址)
+        pattern = re.compile(r"!\[(.*?)\]\((.*?)\)")
+
+        def replacer(match: re.Match) -> str:
+            """
+
+            Args:
+                match:
+
+            Returns:
+                ![摘要](远程图片地址)
+            """
+
+            for img_name, img_summary in summaries.items():
+                origin_img_path = match.group(2)
+                img_name_in_md = Path(origin_img_path).name
+                if img_name == img_name_in_md:
+                    return f"![{img_summary}]({remote_urls[img_name]})"
+            return match.group(0)
+
+        return pattern.sub(replacer, md_content)
+
 
 
 class MarkdownToImageNode(BaseNode):
@@ -404,8 +516,18 @@ class MarkdownToImageNode(BaseNode):
         summaries : Dict[str,str] = self._vlm_summarizer._summary_all(md_path_obj.stem, image_info_list
                                           ,config.vl_model)
 
-        # 4. 将摘要写回状态，供后续切片/向量化使用
-        state['md_content'] = md_content
+        self.log_step("step4", "上传文件到MinIO,且更新MD")
+        new_md_content = self._img_uploader.upload_and_replace(md_path_obj.stem, image_info_list,
+                                                               summaries,
+                                                               md_content,
+                                                               config.minio_bucket,
+                                                               config.get_minio_base_url()
+                                                               )
+        # 5. 备份调配
+        self._md_file_handler.backup(md_path_obj, new_md_content)
+
+        # 4. 将摘要与更新后的md写回状态，供后续切片/向量化使用
+        state['md_content'] = new_md_content
         state['image_summaries'] = summaries
         return state
 
