@@ -8,7 +8,7 @@
 
 """
 
-from typing import TypedDict, List
+from typing import TypedDict, List, Dict
 
 import copy
 
