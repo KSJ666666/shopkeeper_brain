@@ -570,6 +570,37 @@ if __name__ == "__main__":
     print(f"image_summaries 数量: {len(summaries)}")
     for k, v in summaries.items():
         print(f"  - {k}: {v}")
+
+    # 5. MinIO 上传专项测试（上传图片并替换 md 中的图片地址与摘要）
+    print("\n===== MinIO 上传测试 =====")
+    try:
+        from knowledge.processor.improt_processor.config import get_config as _get_config
+
+        cfg = _get_config()
+        md_path_obj = Path(md_path)
+        raw_md = md_path_obj.read_text(encoding="utf-8")
+        img_dir_obj = md_path_obj.parent / "images"
+
+        scanner = _ImageScanner(logging.getLogger("test.img_scanner"))
+        image_info_list = scanner.scan_imgs_dir(
+            img_dir_obj, raw_md, cfg.image_extensions, cfg.img_content_length,
+        )
+        summaries_for_upload = summaries or {
+            info.name: info.name for info in image_info_list
+        }
+        uploader = _ImageUploader(logging.getLogger("test.img_uploader"))
+        new_md = uploader.upload_and_replace(
+            md_path_obj.stem, image_info_list, summaries_for_upload,
+            raw_md, cfg.minio_bucket, cfg.get_minio_base_url(),
+        )
+
+        replaced = re.findall(r"!\[[^\]]*\]\((https?://[^)]*)\)", new_md)
+        print(f"上传并替换完成，新 md 长度: {len(new_md)}，远程图片行: {len(replaced)} 张")
+        for line in replaced[:3]:
+            print(f"  -> {line[:140]}")
+    except Exception as e:
+        print(f"MinIO 上传测试失败: {e}")
+
     print("===== 测试完成 =====")
 
 
