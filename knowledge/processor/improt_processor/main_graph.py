@@ -57,12 +57,12 @@ def improt_graph():
 
     #添加条件边
     work_flow.add_conditional_edges(
-        "entyr_node",
+        "entry_node",
         import_route,
         {
             "pdf_to_md_node":"pdf_to_md_node",
             "md_to_img_node":"md_to_img_node",
-            END:"end_node"
+            END: END
         })
     # 5.2 定义业务边
     work_flow.add_edge("pdf_to_md_node", "md_to_img_node")
