@@ -551,7 +551,7 @@ if __name__ == "__main__":
         load_dotenv(env_path)
 
     # 2. 使用真实 md 文件作为测试素材
-    md_path = r"D:\code\shopkeeper_brain\temp_dir\Aolynk CB304n Cable网桥 用户手册-5W100-整本手册\hybrid_auto\Aolynk CB304n Cable网桥 用户手册-5W100-整本手册.md"
+    md_path = r"D:\code\shopkeeper_brain\docs\万用表的使用_layout\hybrid_auto\万用表的使用_layout.md"
     print(f"测试 md: {md_path}")
 
     # 3. 运行节点完整流程

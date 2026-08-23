@@ -207,6 +207,7 @@ class DocumentSplitNode(BaseNode):
         if "<table>" in body:
             self.logger.info("检查到section中有表格")
             body = MarkdownTableLinearizer.process(body)
+            section["body"] = body
 
         # 2. 获取标题前缀
         title_prefix = f"{title}\n\n"

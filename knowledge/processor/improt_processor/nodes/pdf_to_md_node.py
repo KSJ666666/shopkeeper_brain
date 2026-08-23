@@ -134,8 +134,8 @@ if __name__ == '__main__':
     pdf_to_md_node = PdfToMdNode()
     # 2. 构建该节点状态
     init_state = {
-        "import_file_path": r"D:\agent资料\sgg_zuixin\尚硅谷 - 大模型【7月结课】\17_尚硅谷大模型项目之掌柜智库\2.资料\pdf文档\doc\Aolynk CB304n Cable网桥 用户手册-5W100-整本手册.pdf",
-        "file_dir": r"D:\agent资料\sgg_zuixin\尚硅谷 - 大模型【7月结课】\17_尚硅谷大模型项目之掌柜智库\2.资料\pdf文档\doc"
+        "import_file_path": r"D:\code\shopkeeper_brain\docs\万用表的使用_layout.pdf",
+        "file_dir": r"D:\code\shopkeeper_brain\docs "
     }
     # 3. 直接调用process
     result = pdf_to_md_node.process(init_state)

@@ -31,3 +31,25 @@ env/
 *.log
 *.sqlite
 *.db
+
+# ===== 本地临时目录与产物 =====
+temp_dir/
+*_err.txt
+*.err
+
+# ===== 模型与权重文件 =====
+*.pkl
+*.onnx
+*.pt
+*.pth
+*.h5
+*.gguf
+
+# ===== 系统文件 =====
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ===== 文档与测试目录（不纳入仓库） =====
+docs/
+knowledge/test/
