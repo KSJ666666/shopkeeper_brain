@@ -14,6 +14,8 @@ from knowledge.processor.improt_processor.state import ImportGraphState
 from knowledge.processor.improt_processor.nodes.entry_node import EntryNode
 from knowledge.processor.improt_processor.nodes.md_to_img_node import MarkdownToImageNode
 from knowledge.processor.improt_processor.nodes.pdf_to_md_node import PdfToMdNode
+from knowledge.processor.improt_processor.nodes.document_split_node import DocumentSplitNode
+
 
 
 def import_route(state: ImportGraphState) -> str:
@@ -49,6 +51,7 @@ def improt_graph():
         "entry_node": EntryNode(),
         "md_to_img_node": MarkdownToImageNode(),
         "pdf_to_md_node": PdfToMdNode(),
+        "document_split_node": DocumentSplitNode(),
 
     }
     #添加节点

@@ -1,52 +1,63 @@
-# -*- coding: utf-8 -*-
-"""
-document_split_node.py 逐行注释版
-用途：把一篇 Markdown 文档按标题层级切分成多个"章节"（section），供后续向量化/入库使用。
-说明：本文档在保留原逻辑的基础上补充注释，并标注了原有代码存在的问题（见 BUG 标记）。
-"""
-import re
+import re, os, json
 from typing import Tuple, List, Dict, Any
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-
-from knowledge.processor.improt_processor import config
-from knowledge.processor.improt_processor.base import BaseNode, setup_logging, T
 from knowledge.processor.improt_processor.state import ImportGraphState
-from knowledge.processor.improt_processor.exceptions import StateFieldErro,  r, ValidationError
+from knowledge.processor.improt_processor.base import BaseNode, setup_logging
+from knowledge.utils.markdown_util import MarkdownTableLinearizer
 
 
 class DocumentSplitNode(BaseNode):
+    name = "document_split_node"
+
     def process(self, state: ImportGraphState) -> ImportGraphState:
+
         """
         文档切分的核心逻辑入口
-        预期流程：
-            1. 从 state 校验并取出 md_content / file_title / 长度配置
-            2. 按标题把 md_content 切分为多个 section
-            3. 把 sections 写回 state
-        """
+        (原文档打散:植入元数据【1.自己提取元数据 2.利用llm提取元数据】)---(组装：业务接入)
+        Args:
+            state:
 
+        Returns:
+
+        """
         config = self.config
+
+        # 1. 参数校验
         md_content, file_title, max_content_length, min_content_length = self._validate_state(state, config)
 
         # 2. 切分（一级策略：根据md文档中的标题来切分）多个章节（章节：标题之间的内容）
         sections: List[Dict[str, Any]] = self._split_by_headings(md_content, file_title)
 
+        # 3. 二次切分或者合并
+        final_section = self._split_and_merge(sections, config.max_content_length, config.min_content_length)
+
+        # 4. 组装成chunk对象
+        final_chunks = self._assemble_chunks(final_section)
+
+        # 5. 备份(观察)
+        self._back_up(final_chunks, state)
+
+        # 6. 更新state (chunks)
+        state['chunks'] = final_chunks
+
+        # 7. 返回
+        return state
+
     def _validate_state(self, state: ImportGraphState, config) -> Tuple[str, str, int, int]:
-        """
-        参数校验：从 state 中取出文档内容与标题，统一换行符，并校验切片长度配置。
-        """
+
         self.log_step("step1", "切分文档的参数校验以及获取...")
 
         # 1. 获取md_content
         md_content = state.get('md_content')
 
-        # 2. 统一换行符：把 \r\n / \r 全部归一为 \n，避免不同平台换行导致切分错乱
+        # 2. 统一换行符
         if md_content:
             md_content = md_content.replace("\r\n", "\n").replace("\r", "\n")
 
         # 3. 获取文件标题
         file_title = state.get('file_title')
 
-        # 4. 校验最大最小值：长度参数必须为正，且最大值必须大于最小值
+        # 4. 校验最大最小值
         if config.max_content_length <= 0 or config.min_content_length <= 0 \
                 or config.max_content_length <= config.min_content_length:
             raise ValueError(f"切片长度参数校验失败")
@@ -54,42 +65,50 @@ class DocumentSplitNode(BaseNode):
         return md_content, file_title, config.max_content_length, config.min_content_length
 
     def _split_by_headings(self, md_content: str, file_title: str) -> List[Dict[str, Any]]:
-        """
-        根据 Markdown 标题（# ~ ######）把文档切成多个章节。
-        每个章节包含：
-            body:         正文内容（该标题之下、下一标题之前的所有行）
-            title:        当前标题
-            parent_title: 父标题（用于后续短章节合并时判断"是否同源"）
-            file_title:   整个文档的标题
-        """
-        in_fence = False    # 是否处于代码块内（``` 或 ~~~），代码块里的 # 不算标题
-        body_liens = []     # 暂存当前章节收集到的正文行
-        sections = []       # 最终收集到的章节对象
-        current_title = ""  # 当前章节标题
-        hierarchy = [""] * 7  # 标题层级追踪数组：hierarchy[i] = 最近遇到的第 i 级标题
-        current_level = 0     # 当前标题的层级（# 的个数）
 
-        def _flush() -> List[Dict[str, Any]]:
+        """
+        parent_title:封装的原因主要为了后面短section在合并的时候有一个判断标准（同源：同一个父标题）
+        根据标题来切分（# {1,6}都有可能）
+        Args:
+            md_content: 切分的md
+            file_title: 上传文档标题
+
+        Returns:
+         List[Dict]:切分后的多个章节
+        """
+
+        in_fence = False  # 是否在代码块内
+        body_liens = []
+        sections = []  # 最终收集到的章节对象
+        current_title = ""
+        hierarchy = [""] * 7  # （数组）存储所有标题内容（作为section的父标题使用） 标题层级追踪数组
+        current_level = 0
+
+        def _flush():
             """
-            把暂存的行打包成一个 section 对象。
-            打包规则：
-              - current_title 为空、body 有内容  → 可打包（作为文档开头的导语等，有意义）
-              - current_title 有、body 为空      → 可打包（空章节标题，保留以备合并）
-              - 两者都有                        → 一定打包
-              - 两者都为空                      → 不打包
+            打包section
+            {
+            "body": "收集到的所有行"
+            “title”:"当前内容的标题"
+            "parent_title":当前内容的父标题（最麻烦）
+            "file_title":文档标题（最简单）
+            }
+            Returns:
+            如果current_title没有，body有 能进入打包成section,【也有意义】
+            如果current_title有,body没有。也打包成section:在合并阶段可以保留上【可选：建议留下来】在后续合并阶段没有任何影响
+            如果current_title有，body也有 能进入打包成section【一定留】
+            如果current_title没有 body也没有 不会进入（不能打包）
             """
-            # 1. 将收集到的正文行拼接成字符串
+
+            # 1. 处理内容行
             body = "\n".join(body_liens)
-
             if current_title or body:
                 parent_title = ""
-                # 找父标题：从当前层级的上一级开始，向上找最近一个"非空"的层级标题
                 for i in range(current_level - 1, 0, -1):
-                    if hierarchy[i]:          # 跳过空值，读到最近的父标题
-                        parent_title = hierarchy[i]
+                    if hierarchy[i]:  # 找父标题的时候 排除某一个位置的空值
+                        parent_title = hierarchy[i]  # 读取操作
                         break
 
-                # 兜底：找不到父标题时，用当前标题或文档标题作为父标题
                 if not parent_title:
                     parent_title = current_title if current_title else file_title
 
@@ -97,44 +116,235 @@ class DocumentSplitNode(BaseNode):
                     "body": body,
                     "title": current_title if current_title else file_title,  # 内容标题
                     "parent_title": parent_title,  # 内容父标题
-                    "file_title": file_title,      # 文档标题
+                    "file_title": file_title,
                 })
 
-        # 1. 按换行符把整篇 md 切成行
+        # 1. 根据\n切分md_content
         md_lines = md_content.split("\n")
 
-        # 2. 标题正则：行首允许空白，后跟 1~6 个 # 和至少一个空格
-        #    group(1) = # 的个数（层级），group(2) = 标题内容
+        # 2. 定义正则（正则的规则是从MD中找标题#{1,6}）():捕获组:产生三个group(0) group(1):#(1)#(6) group(2)标题的内容
         heading_re = re.compile(r"^\s*(#{1,6})\s+(.+)")
 
-        # 3. 逐行扫描
+        # 3. 遍历切分后md_lines
         for md_line in md_lines:
 
-            # 3.1 检测代码块边界（``` 或 ~~~），遇到边界就翻转状态
+            # 3.1 检测代码块边界（``` 或 ~~~）代码块要留下来
             if md_line.strip().startswith("```") or md_line.strip().startswith("~~~"):
-                in_fence = not in_fence  # 翻转而非固定赋值，保证嵌套/进出配对正确
+                in_fence = not in_fence  # 不要用固定true  or false
 
-            # 3.2 不在代码块内时才尝试匹配标题正则
+            # 3.2 判读是否要走正则
             match = heading_re.match(md_line) if not in_fence else None
 
-            # 3.3 匹配到了标题（且一定不是代码块里的 #）
+            # 3.3 判断math 是否有
+            # 代表匹配到了标题而且一定是非代码块中的# 标题
             if match:
-                # 先把前面暂存的行打包成 section（结束上一个章节）
+
+                # 将 body_liens中收集到的行封装到section对象
                 _flush()
+                current_title = md_line  # 当前标题
+                level = len(match.group(1))  # 当前标题的层级（# {1,6}）
+                current_level = level
+                hierarchy[level] = current_title  # 写入操作
 
-                current_title = md_line               # 记录当前标题（整行，含 #）
-                level = len(match.group(1))           # 标题层级 = # 的个数
-                current_level = level                 # 更新当前层级
-                hierarchy[level] = current_title      # 写入当前层级的标题
-
-                # 清空所有比当前层级更低的层级记录（表示新开分支）
                 for i in range(level + 1, 7):
-                    hierarchy[i] = ""
+                    hierarchy[i] = ""  # 下面的清空
+                # 没有匹配到标题[普通行] 或者是代码块（加入）
 
-            # 没匹配到标题（普通行）或处于代码块内 → 收集进暂存区
+                body_liens = []
             else:
                 body_liens.append(md_line)
 
-        # 收尾：把最后一段暂存的行也打包
-        _flush()  # BUG 3: 原文件此处写成 _flush（缺括号），只引用函数不执行，需改为 _flush()
+        _flush()
         return sections
+
+    def _split_and_merge(self, sections: List[Dict[str, Any]], max_content_length: int, min_content_length: int) -> \
+            List[Dict[str, Any
+            ]]:
+        """
+        切分较大的章节（section）以及合并较小章节（section）
+        Args:
+            sections: 所有经过一级切分后的章节
+            max_content_length: 最大内容长度（content:title+\n\n+body）如果section中的内容长度超过阈值max_content_length，就需要进行切割，反之不需要切割（尽量保证不要太多的section进行二次切割）
+            min_content_length: 最小内容长度：如果section中的内容长度不足阈值min_content_length,就需要对该section进行合并。同源机制合并（section相同的父标题才合。尽量保证确实比较小的内容才合并，不要把大多数的section都合并）
+
+        Returns:
+            先切后合
+
+        """
+
+        # 1. 切分
+        current_sections = []
+        for section in sections:
+            current_sections.extend(self._split_long_section(section, max_content_length))
+
+        # 2. 合并
+        final_sections = self._merger_short_section(current_sections, min_content_length)
+
+        return final_sections
+
+    def _split_long_section(self, section: Dict[str, Any], max_content_length: int) -> List[Dict[str, Any]]:
+        """
+        切分的章节内容
+        Args:
+            section: 当期章节
+            max_content_length: 最大长度阈值
+
+        Returns:
+            List[Dict[str,Any]]
+
+
+        """
+
+        # 1. 获取section对象的属性
+        body = section.get('body')  # 行内容
+        title = section.get('title')  # 标题
+        parent_title = section.get('parent_title')  # 父标题
+        file_title = section.get('file_title')  # 文档标题
+
+        if len(title) > 80:
+            title = title[:80]  # 防御性编程：title 本身就超长的极端情况
+
+        if "<table>" in body:
+            self.logger.info("检查到section中有表格")
+            body = MarkdownTableLinearizer.process(body)
+
+        # 2. 获取标题前缀
+        title_prefix = f"{title}\n\n"
+
+        # 3. 获取总长度【标题(前缀)+body】
+        total_length = len(title_prefix) + len(body)
+
+        # 4. 判断总长度是否超过阈值
+        if total_length <= max_content_length:
+            return [section]
+
+        # 5. 能切分的内容长度计算出来（body）
+        body_length = max_content_length - len(title_prefix)
+        if body_length <= 0:
+            return [section]  # 防御性编程：title 本身就超长的极端情况
+
+        # 6. 切分(6.1 用谁切:LangChain的切分器:递归切分器 6. 去切谁:body)
+        # 6.1 切分器对象  # 1. chunk_size:chunk块的大小  2.chunk_overlap块与块之间的重叠的字符数  3. separators：分割符 【"\n\n",'\n',' ',''】
+        text_spliter = RecursiveCharacterTextSplitter(
+            chunk_size=body_length,
+            chunk_overlap=0,
+            separators=["\n\n", "\n", "。", "？", "！", "；", ".", "?", "!", ';', " ", ""],
+            keep_separator=True)
+
+        # 6.2 切分器对象切分
+        sections = text_spliter.split_text(body)
+
+        # 6.3 判断
+        if len(sections) == 1:
+            return [section]
+
+        # 6.4 遍历
+        sub_sections = []
+        for index, section in enumerate(sections):
+            sub_sections.append({
+                "body": section,
+                "title": f"{title}_{index + 1}",
+                "parent_title": parent_title,
+                "file_title": file_title
+            })
+
+        # 7. 返回
+        return sub_sections
+
+    def _merger_short_section(self, current_sections, min_content_length) -> List[Dict[str, Any]]:
+        """
+        合并短的章节：
+        短章节来源：
+        来源1：原本根据一级标题切分之后可能内容就很短
+        来源2：（LangChain递归切分器）二次切分之后可能有很短的内容
+        合并策略：
+        条件1：section很短比最小阈值还小
+        条件2：同源（父标题相同）
+        Args:
+            current_sections: 二次切分后的所有section对象
+            min_content_length:每一个section的内容最小长度
+
+        Returns:
+            合并之后的section对象
+
+            贪心累加算法
+
+        """
+
+        current_section = current_sections[0]
+        final_sections = []
+
+        # 2. 遍历合并
+        for next_section in current_sections[1:]:
+            same_parent = (current_section['parent_title'] == next_section['parent_title'])
+            if same_parent and len(current_section.get('body')) < min_content_length:
+                # 合并 body
+                current_section['body'] = (
+                        current_section.get('body').rstrip() + "\n\n" + next_section.get('body').lstrip()
+                )
+                # 标题回退为父标题
+                current_section['title'] = current_section['parent_title']
+            else:
+                # 封箱
+                final_sections.append(current_section)
+                current_section = next_section  # 更新指针
+        # 最后一个封箱
+        final_sections.append(current_section)
+        return final_sections
+
+    def _assemble_chunks(self, final_sections: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        组装最后的chunks
+        Args:
+            final_section:
+
+        Returns:
+
+        """
+        final_chunks = []
+        for section in final_sections:
+            body = section.get('body')
+            title = section.get('title')
+            parent_title = section.get('parent_title')
+            file_title = section.get('file_title')
+
+            content = f"{title}\n\n{body}"
+
+            final_chunks.append({
+                "content": content,
+                "title": title,
+                "parent_title": parent_title,
+                "file_title": file_title
+            })
+        self.logger.info(f"最终切割后能够进入到嵌入节点的chunk个数:{len(final_chunks)}")
+        return final_chunks
+
+    def _back_up(self, final_chunks, state: ImportGraphState):
+        """将切分结果备份到 JSON 文件"""
+        local_dir = state.get("file_dir", "")
+        if not local_dir:
+            return
+        try:
+            os.makedirs(local_dir, exist_ok=True)  # 如果目录存在 不报错
+            output_path = os.path.join(local_dir, "chunks.json")
+
+            with open(output_path, "w", encoding="utf-8") as f:
+                json.dump(final_chunks, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            self.logger.warning(f"备份失败: {e}")
+
+
+if __name__ == '__main__':
+    document_split_node = DocumentSplitNode()
+
+    md_path = r"D:\develop\develop\workspace\pycharm\BJ251208\shopkeeper_brain\knowledge\processor\import_processor\temp_dir\万用表的使用_new.md"
+
+    with open(md_path, "r", encoding="utf-8") as f:
+        md_content = f.read()
+
+    init_state = {
+        "md_content": md_content,
+        "file_title": "万用表的使用",
+        "file_dir": r"D:\develop\develop\workspace\pycharm\BJ251208\shopkeeper_brain\knowledge\processor\import_processor\temp_dir"
+    }
+    document_split_node.process(init_state)
