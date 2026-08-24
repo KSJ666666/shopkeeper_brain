@@ -113,9 +113,4 @@ class AIClients(BaseClientManager):
             raise ConnectionError(f"BGE_M3嵌入模型客户端创建失败: {e}") from e
 
 
-if __name__ == '__main__':
-    llm_client:ChatOpenAI = AIClients.get_openai_llm_client()
-    response = llm_client.invoke("给我讲一句笑话，要求输出json格式")
-    import json
-    data = json.loads(response.content)
-    print(data)
+
