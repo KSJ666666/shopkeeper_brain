@@ -15,6 +15,7 @@ from knowledge.processor.improt_processor.nodes.entry_node import EntryNode
 from knowledge.processor.improt_processor.nodes.md_to_img_node import MarkdownToImageNode
 from knowledge.processor.improt_processor.nodes.pdf_to_md_node import PdfToMdNode
 from knowledge.processor.improt_processor.nodes.document_split_node import DocumentSplitNode
+from knowledge.processor.improt_processor.nodes.item_name_recognition_node import ItemNameRecognitionNode
 
 
 
@@ -52,6 +53,7 @@ def improt_graph():
         "md_to_img_node": MarkdownToImageNode(),
         "pdf_to_md_node": PdfToMdNode(),
         "document_split_node": DocumentSplitNode(),
+        "item_name_recognition_node": ItemNameRecognitionNode(),
 
     }
     #添加节点
@@ -69,7 +71,9 @@ def improt_graph():
         })
     # 5.2 定义业务边
     work_flow.add_edge("pdf_to_md_node", "md_to_img_node")
-    work_flow.add_edge("md_to_img_node", END)
+    work_flow.add_edge("md_to_img_node", "document_split_node")
+    work_flow.add_edge("document_split_node", "item_name_recognition_node")
+    work_flow.add_edge("item_name_recognition_node", END)
 
     # 5.3 编译
     complied_state_graph = work_flow.compile()
