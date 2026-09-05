@@ -16,6 +16,8 @@ from knowledge.processor.improt_processor.nodes.md_to_img_node import MarkdownTo
 from knowledge.processor.improt_processor.nodes.pdf_to_md_node import PdfToMdNode
 from knowledge.processor.improt_processor.nodes.document_split_node import DocumentSplitNode
 from knowledge.processor.improt_processor.nodes.item_name_recognition_node import ItemNameRecognitionNode
+from knowledge.processor.improt_processor.nodes.embedding_chunks_node import EmbeddingChunksNode
+from knowledge.processor.improt_processor.nodes.import_milvus_node import ImportMilvusNode
 
 
 
@@ -35,7 +37,7 @@ def import_route(state: ImportGraphState) -> str:
 
 
 
-def improt_graph():
+def import_graph():
     """
     定义编排节点
     :return:
@@ -54,7 +56,8 @@ def improt_graph():
         "pdf_to_md_node": PdfToMdNode(),
         "document_split_node": DocumentSplitNode(),
         "item_name_recognition_node": ItemNameRecognitionNode(),
-
+        "embedding_chunks_node": EmbeddingChunksNode(),
+        "import_milvus_node": ImportMilvusNode(),
     }
     #添加节点
     for node_name,node_obj in node_name_obj.items():
@@ -73,12 +76,17 @@ def improt_graph():
     work_flow.add_edge("pdf_to_md_node", "md_to_img_node")
     work_flow.add_edge("md_to_img_node", "document_split_node")
     work_flow.add_edge("document_split_node", "item_name_recognition_node")
-    work_flow.add_edge("item_name_recognition_node", END)
+    work_flow.add_edge("item_name_recognition_node", "embedding_chunks_node")
+    work_flow.add_edge("embedding_chunks_node", "import_milvus_node")
+    work_flow.add_edge("import_milvus_node", END)
 
     # 5.3 编译
     complied_state_graph = work_flow.compile()
 
     return complied_state_graph
+
+
+import_app = import_graph()
 
 
 

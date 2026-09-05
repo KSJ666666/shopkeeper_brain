@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import List, Dict, Any, Tuple, Optional
+from typing import List, Dict, Any, Tuple, Optional, Sequence
 from pymilvus import MilvusClient, DataType
 from knowledge.processor.improt_processor.base import BaseNode, setup_logging
 from knowledge.processor.improt_processor.state import ImportGraphState
@@ -14,7 +14,7 @@ class _SCALAR_FIELD_SPC:
     max_length: Optional[int] = None
 
 
-_SCALAR_FIELDS: [_SCALAR_FIELD_SPC] = (
+_SCALAR_FIELDS: Sequence[_SCALAR_FIELD_SPC] = (
     _SCALAR_FIELD_SPC(field_name="content", datatype=DataType.VARCHAR, max_length=65535),
     _SCALAR_FIELD_SPC(field_name="title", datatype=DataType.VARCHAR, max_length=65535),
     _SCALAR_FIELD_SPC(field_name="parent_title", datatype=DataType.VARCHAR, max_length=65535),
